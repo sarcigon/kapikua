@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>KAPIKUA - Domino Score Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            user-select: none;
+        }
+        .thumb-zone {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .capicua-animation {
+            animation: bounce 0.5s ease infinite alternate;
+        }
+        @keyframes bounce {
+            from { transform: scale(1); }
+            to { transform: scale(1.1); }
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .modal-overlay {
+            backdrop-filter: blur(8px);
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans h-screen overflow-hidden flex flex-col">
+
+    <!-- APP CONTAINER -->
+    <div id="app" class="h-full flex flex-col"></div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div id="toast" class="fixed top-10 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-full bg-amber-500 text-slate-900 font-bold shadow-lg opacity-0 pointer-events-none transition-all duration-300 transform translate-y-[-20px]">
+        ✨ DOS MAS! ✨
+    </div>
+
+    <script>
+        /**
+         * KAPIKUA - Modular Application Structure
+         */
+
+        // --- STATE MANAGEMENT ---
+        KAPIKUA = {
+            State: {
+                keys: {
+                    PROFILES: 'kapikua_profiles',
+                    HISTORY: 'kapikua_history'
+                },
+                profiles: [],
+                history: [],
+                currentGame: null,
+
+                load() {
+                    this.profiles = JSON.parse(localStorage.getItem(this.keys.PROFILES) || '[]');
+                    this.history = JSON.parse(localStorage.getItem(this.keys.HISTORY) || '[]');
+                    if (this.profiles.length === 0) {
+                        // Initial seed
+                        this.profiles = [
+                            { id: '1', name: 'Player 1', wins: 0, losses: 0 },
+                            { id: '2', name: 'Player 2', wins: 0, losses: 0 },
+                            { id: '3', name: 'Player 3', wins: 0, losses: 0 },
+                            { id: '4', name: 'Player 4', wins: 0, losses: 0 }
+                        ];
+                        this.saveProfiles();
+                    }
+                },
+                saveProfiles() {
+                    localStorage.setItem(this.keys.PROFILES, JSON.stringify(this.profiles));
+                },
+                saveHistory() {
+                    localStorage.setItem(this.keys.HISTORY, JSON.stringify(this.history));
+                },
+                addWinLoss(playerIds, winnerIds) {
+                    this.profiles = this.profiles.map(p => {
+                        if (winnerIds.includes(p.id)) {
+                            return { ...p, wins: p.wins + 1 };
+                        } else if (playerIds.includes(p.id)) {
+                            return { ...p, losses: p.losses + 1 };
+                        }
+                        return p;
+                    });
+                    this.saveProfiles();
+                },
+                exportData() {
+                    const data = { profiles: this.profiles, history: this.history };
+                    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `kapikua_backup_${new Date().toISOString().split('T')[0]}.json`;
+                    a.click();
+                },
+                importData(json) {
+                    const data = JSON.parse(json);
+                    if (data.profiles && data.history) {
+                        this.profiles = data.profiles;
+                        this.history = data.history;
+                        this.saveProfiles();
+                        this.saveHistory();
+                        return true;
+                    }
+                    return false;
+                }
+            },
+
+            Formatter: {
+                fullDate(dateStr) {
+                    const date = new Date(dateStr);
+                    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+                    return `${days[date.getDay()]} ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+                },
+                shortDate(dateStr) {
+                    return new Date(dateStr).toLocaleDateString();
+                }
+            },
+
+            GameLogic: {
+                isPalindrome(num) {
+                    const s = num.toString();
+                    return s === s.split('').reverse().join('');
+                },
+                calculateTotals(rounds) {
+                    return rounds.reduce((acc, r) => ({
+                        a: acc.a + r.a,
+                        b: acc.b + r.b
+                    }), { a: 0, b: 0 });
+                },
+                checkWinner(totals, winningScore) {
+                    if (totals.a >= winningScore) return 'A';
+                    if (totals.b >= winningScore) return 'B';
+                    return null;
+                }
+            },
+
+            UI: {
+                // Templates
+                setup: () => {
+                    return `
+                        <div class="flex-1 p-6 flex flex-col gap-6 overflow-y-auto hide-scrollbar">
+                            <header class="text-center mb-4">
+                                <h1 class="text-4xl font-black text-amber-500 uppercase tracking-tighter italic">KAPIKUA</h1>
+                                <p class="text-slate-400 text-sm">Professional Domino Scoring</p>
+                            </header>
+
+                            <div class="space-y-6">
+                                <div class="flex justify-between items-center">
+                                    <h2 class="text-lg font-bold text-slate-300 flex items-center gap-2">
+                                        <i data-lucide="users" class="w-5 h-5"></i> Player Selection
+                                    </h2>
+                                    <button onclick="KAPIKUA.App.showRosterManager()" class="text-xs font-bold text-amber-500 uppercase border border-amber-500/30 px-2 py-1 rounded hover:bg-amber-500/10 transition-colors">
+                                        Manage Roster
+                                    </button>
+                                </div>
+
+                                <div class="grid grid-cols-1 gap-3">
+                                    ${[0,1,2,3].map(i => `
+                                        <div class="flex items-center gap-3 bg-slate-800 p-3 rounded-xl border border-slate-700">
+                                            <span class="bg-slate-700 w-8 h-8 flex items-center justify-center rounded-full text-xs font-bold">${i+1}</span>
+                                            <div class="flex-1 flex items-center justify-between">
+                                                <span id="slot-${i}" class="text-lg font-medium text-slate-300">Unselected</span>
+                                                <button onclick="KAPIKUA.App.openPlayerPicker(${i})" class="p-2 bg-slate-700 rounded-lg hover:bg-slate-600 transition-colors">
+                                                    <i data-lucide="user-plus" class="w-5 h-5 text-amber-500"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+
+                            <div class="space-y-4">
+                                <h2 class="text-lg font-bold text-slate-300 flex items-center gap-2">
+                                    <i data-lucide="settings-2" class="w-5 h-5"></i> Match Format
+                                </h2>
+                                <div class="grid grid-cols-2 gap-3">
+                                    ${['2V2', 'BEST OF 3', 'BEST OF 5', 'RIVALRY MATCH', 'TRAINING MATCH'].map(fmt => `
+                                        <button onclick="KAPIKUA.App.setFormat('${fmt}')" id="fmt-${fmt.replace(/\\s/g, '')}"
+                                            class="format-btn p-3 rounded-xl border border-slate-700 bg-slate-800 text-sm font-bold text-slate-400 hover:border-amber-500 transition-all ${fmt === '2V2' ? 'border-amber-500 text-amber-500 bg-amber-500/5' : ''}">
+                                            ${fmt}
+                                        </button>
+                                    `).join('')}
+                                </div>
+                            </div>
+
+                            <button onclick="KAPIKUA.App.startGame()" class="w-full py-4 bg-amber-500 hover:bg-amber-400 text-slate-900 font-black text-xl rounded-2xl shadow-lg transition-transform active:scale-95 uppercase tracking-tight">
+                                Start Match
+                            </button>
+
+                            <div class="flex gap-3">
+                                <button onclick="KAPIKUA.App.renderHistory()" class="flex-1 py-3 bg-slate-800 text-slate-400 font-bold text-sm rounded-xl border border-slate-700 hover:text-slate-200 transition-colors">
+                                    History
+                                </button>
+                                <button onclick="KAPIKUA.App.exportData()" class="p-3 bg-slate-800 text-slate-400 rounded-xl border border-slate-700 hover:text-slate-200">
+                                    <i data-lucide="download" class="w-5 h-5"></i>
+                                </button>
+                                <button onclick="KAPIKUA.App.importData()" class="p-3 bg-slate-800 text-slate-400 rounded-xl border border-slate-700 hover:text-slate-200">
+                                    <i data-lucide="upload" class="w-5 h-5"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                playerPicker: (slotIndex) => {
+                    return `
+                        <div class="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm p-4">
+                            <div class="bg-slate-800 w-full max-w-md rounded-t-3xl border-t border-amber-500/30 shadow-2xl overflow-hidden transform transition-transform duration-300 translate-y-0">
+                                <div class="p-4 border-b border-slate-700 flex justify-between items-center">
+                                    <h3 class="font-bold text-slate-200">Select Player for Slot ${slotIndex+1}</h3>
+                                    <button onclick="KAPIKUA.App.closeModal()" class="p-1 text-slate-500 hover:text-slate-300">
+                                        <i data-lucide="x" class="w-6 h-6"></i>
+                                    </button>
+                                </div>
+                                <div class="p-4 max-h-[60vh] overflow-y-auto hide-scrollbar grid grid-cols-2 gap-3">
+                                    ${KAPIKUA.State.profiles.map(p => `
+                                        <div onclick="KAPIKUA.App.pickPlayer(${slotIndex}, '${p.id}')"
+                                            class="p-4 bg-slate-700 rounded-xl border border-slate-600 text-center cursor-pointer hover:bg-slate-600 active:scale-95 transition-all">
+                                            <div class="font-bold text-slate-100">${p.name}</div>
+                                            <div class="text-[10px] text-slate-400 uppercase">W: ${p.wins} L: ${p.losses}</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                <div class="p-4 bg-slate-900/50 border-t border-slate-700">
+                                    <input type="text" id="new-player-name" placeholder="New Player Name..."
+                                        class="w-full p-3 bg-slate-800 rounded-lg border border-slate-600 outline-none text-slate-200 focus:border-amber-500 transition-colors">
+                                    <button onclick="KAPIKUA.App.addNewPlayer(${slotIndex})" class="w-full mt-3 py-3 bg-amber-500 text-slate-900 font-black rounded-xl active:scale-95 transition-transform uppercase text-sm">
+                                        Add & Select
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                rosterManager: () => {
+                    return `
+                        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                            <div class="bg-slate-800 w-full max-w-md rounded-3xl border border-slate-700 shadow-2xl overflow-hidden">
+                                <div class="p-4 border-b border-slate-700 flex justify-between items-center">
+                                    <h3 class="font-bold text-slate-200">Manage Roster</h3>
+                                    <button onclick="KAPIKUA.App.closeModal()" class="p-1 text-slate-500 hover:text-slate-300">
+                                        <i data-lucide="x" class="w-6 h-6"></i>
+                                    </button>
+                                </div>
+                                <div class="p-4 max-h-[70vh] overflow-y-auto hide-scrollbar space-y-2">
+                                    ${KAPIKUA.State.profiles.map(p => `
+                                        <div class="flex items-center justify-between p-3 bg-slate-700 rounded-xl">
+                                            <span class="font-medium">${p.name}</span>
+                                            <button onclick="KAPIKUA.App.removePlayer('${p.id}')" class="p-2 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors">
+                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                            </button>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                game: (game) => {
+                    const totals = KAPIKUA.GameLogic.calculateTotals(game.rounds);
+                    return `
+                        <div class="h-full flex flex-col bg-slate-900">
+                            <div class="p-4 flex justify-between items-center border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-10">
+                                <button onclick="KAPIKUA.App.renderSetup()" class="p-2 hover:bg-slate-800 rounded-lg transition-colors">
+                                    <i data-lucide="chevron-left" class="w-6 h-6 text-slate-400"></i>
+                                </button>
+                                <div class="text-center">
+                                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">${game.format}</span>
+                                    <div class="text-lg font-black text-amber-500 uppercase tracking-tighter">KAPIKUA</div>
+                                </div>
+                                <button onclick="KAPIKUA.App.undoLastRound()" class="p-2 hover:bg-slate-800 rounded-lg transition-colors">
+                                    <i data-lucide="undo-2" class="w-6 h-6 text-slate-400"></i>
+                                </button>
+                            </div>
+
+                            <div class="flex-1 overflow-y-auto hide-scrollbar p-4 space-y-4">
+                                <table class="w-full text-left border-separate border-spacing-y-2">
+                                    <thead>
+                                        <tr class="text-slate-500 text-xs uppercase font-bold">
+                                            <th class="px-2 py-2 w-12 text-center">Rd</th>
+                                            <th class="px-4 py-2">${game.teams[0].name}</th>
+                                            <th class="px-4 py-2">${game.teams[1].name}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${game.rounds.map((r, i) => `
+                                            <tr class="bg-slate-800 rounded-xl overflow-hidden shadow-sm">
+                                                <td class="px-2 py-4 text-center text-slate-500 font-mono text-sm">${i+1}</td>
+                                                <td class="px-4 py-4 font-bold text-lg">${r.a}</td>
+                                                <td class="px-4 py-4 font-bold text-lg">${r.b}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr class="bg-amber-500 text-slate-900 font-black rounded-xl overflow-hidden shadow-xl">
+                                            <td class="px-2 py-4 text-center uppercase text-xs">Total</td>
+                                            <td class="px-4 py-4 text-2xl text-center" onclick="KAPIKUA.App.openScoreModal('a')">${totals.a}</td>
+                                            <td class="px-4 py-4 text-2xl text-center" onclick="KAPIKUA.App.openScoreModal('b')">${totals.b}</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+
+                            <div class="thumb-zone p-4 bg-slate-800 border-t border-slate-700 flex flex-col gap-3">
+                                <div class="flex items-center justify-between gap-4">
+                                    <button onclick="KAPIKUA.App.openScoreModal('a')" class="flex-1 py-3 bg-slate-700 text-slate-200 font-bold rounded-xl border border-slate-600 active:scale-95 transition-all">
+                                        Add ${game.teams[0].name}
+                                    </button>
+                                    <button onclick="KAPIKUA.App.forfeitMatch()" class="px-4 py-3 bg-red-500/10 text-red-500 font-bold rounded-xl border border-red-500/30 active:scale-95 transition-all text-xs uppercase">
+                                        End Match
+                                    </button>
+                                    <button onclick="KAPIKUA.App.openScoreModal('b')" class="flex-1 py-3 bg-slate-700 text-slate-200 font-bold rounded-xl border border-slate- la600 active:scale-95 transition-all">
+                                        Add ${game.teams[1].name}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                scoreModal: (teamKey) => {
+                    return `
+                        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+                            <div class="bg-slate-800 w-full max-w-xs rounded-3xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col">
+                                <div class="p-4 border-b border-slate-700 flex justify-between items-center">
+                                    <span class="font-bold text-slate-300 uppercase text-sm">Enter Points</span>
+                                    <button onclick="KAPIKUA.App.closeModal()" class="p-1 text-slate-500 hover:text-slate-300">
+                                        <i data-lucide="x" class="w-6 h-6"></i>
+                                    </button>
+                                </div>
+                                <div class="p-6 flex flex-col items-center gap-8">
+                                    <div id="modal-score-display" class="text-6xl font-black text-amber-500 font-mono">0</div>
+
+                                    <div class="grid grid-cols-3 gap-3 w-full">
+                                        ${[1,2,3,4,5,6,7,8,9,'C',0,'Enter'].map(key => `
+                                            <button onclick="KAPIKUA.App.handleKey('${key}')" class="py-5 ${key === 'Enter' ? 'bg-amber-500 text-slate-900' : 'bg-slate-700 text-slate-100'} font-black text-xl rounded-2xl active:scale-90 transition-transform">
+                                                ${key}
+                                            </button>
+                                        `).join('')}
+                                    </div>
+
+                                    <div class="flex gap-4 w-full">
+                                        <button onclick="KAPIKUA.App.adjustModalScore(-1)" class="flex-1 py-3 bg-slate-700 text-slate-300 font-bold rounded-xl">-1</button>
+                                        <button onclick="KAPIKUA.App.adjustModalScore(1)" class="flex-1 py-3 bg-slate-700 text-slate-300 font-bold rounded-xl">+1</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                history: () => {
+                    const grouped = KAPIKUA.App.groupHistoryByDate();
+                    return `
+                        <div class="flex-1 p-6 flex flex-col gap-6 overflow-y-auto hide-scrollbar">
+                            <header class="flex items-center justify-between mb-4">
+                                <div class="flex items-center gap-4">
+                                    <button onclick="KAPIKUA.App.renderSetup()" class="p-2 bg-slate-800 rounded-lg">
+                                        <i data-lucide="chevron-left" class="w-6 h-6 text-slate-400"></i>
+                                    </button>
+                                    <h1 class="text-2xl font-black text-amber-500 uppercase tracking-tighter">Match History</h1>
+                                </div>
+                                <div class="flex gap-2">
+                                    <input type="date" id="history-search" onchange="KAPIKUA.App.searchHistory(this.value)" class="bg-slate-800 border border-slate-700 text-xs p-2 rounded-lg outline-none text-slate-300">
+                                </div>
+                            </header>
+
+                            <div class="space-y-6">
+                                ${Object.keys(grouped).length === 0 ? `
+                                    <div class="text-center py-20 text-slate-500">
+                                        <i data-lucide="database" class="w-12 h-12 mx-auto mb-4 opacity-20"></i>
+                                        <p>No records found.</p>
+                                    </div>
+                                ` : Object.entries(grouped).map(([date, matches]) => `
+                                    <div class="space-y-3">
+                                        <div class="text-sm font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                                            <i data-lucide="calendar" class="w-4 h-4"></i> ${KAPIKUA.Formatter.fullDate(date)}
+                                        </div>
+                                        <div class="grid grid-cols-1 gap-3">
+                                            ${matches.map(m => `
+                                                <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 flex justify-between items-center ${m.format === 'RIVALRY' ? 'border-amber-500/50 ring-1 ring-amber-500/20' : ''}">
+                                                    <div>
+                                                        <div class="text-[10px] font-bold text-slate-500 uppercase">${m.format}</div>
+                                                        <div class="text-lg font-bold">${m.winner} Won</div>
+                                                    </div>
+                                                    <div class="text-right">
+                                                        <div class="text-xs font-bold text-slate-500 uppercase">Score</div>
+                                                        <div class="text-lg font-black text-amber-500">${m.scoreA} - ${m.scoreB}</div>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+
+                            <div class="mt-6 pt-6 border-t border-slate-800 space-y-4">
+                                <h3 class="text-lg font-bold text-slate-300">Player Records</h3>
+                                <div class="grid grid-cols-1 gap-2">
+                                    ${KAPIKUA.State.profiles.map(p => `
+                                        <div class="flex justify-between p-3 bg-slate-800 rounded-xl border border-slate-700">
+                                            <span class="font-medium">${p.name}</span>
+                                            <span class="text-sm font-mono text-amber-500">W ${p.wins} | L ${p.losses}</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+
+                            <button onclick="KAPIKUA.App.clearHistory()" class="w-full py-3 text-red-400 font-bold text-sm hover:text-red-300 transition-colors">
+                                Clear All History
+                            </button>
+                        </div>
+                    `;
+                },
+
+                summary: (game) => {
+                    const totals = KAPIKUA.GameLogic.calculateTotals(game.rounds);
+                    return `
+                        <div class="h-full flex flex-col p-6 text-center justify-center gap-8 bg-slate-900">
+                            <div class="space-y-2">
+                                <i data-lucide="trophy" class="w-20 h-20 mx-auto text-amber-500 animate-bounce"></i>
+                                <h1 class="text-5xl font-black text-white uppercase tracking-tighter">DOS MAS!</h1>
+                                <p class="text-slate-400">Match concluded.</p>
+                            </div>
+
+                            <div class="bg-slate-800 p-8 rounded-3xl border-2 border-amber-500 shadow-2xl space-y-6">
+                                <div class="text-center">
+                                    <div class="text-sm font-bold text-slate-500 uppercase mb-1">Winning Team</div>
+                                    <div class="text-3xl font-black text-amber-500">${game.winner}</div>
+                                </div>
+                                <div class="flex justify-between gap-4">
+                                    <div class="text-center">
+                                        <div class="text-xs font-bold text-slate-500 uppercase">${game.teams[0].name}</div>
+                                        <div class="text-2xl font-bold">${totals.a}</div>
+                                    </div>
+                                    <div class="text-2xl font-black text-slate-700">VS</div>
+                                    <div class="text-center">
+                                        <div class="text-xs font-bold text-slate-500 uppercase">${game.teams[1].name}</div>
+                                        <div class="text-2xl font-bold">${totals.b}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col gap-3">
+                                <button onclick="KAPIKUA.App.shareResult('${game.winner}', ${totals.a}, ${totals.b})" class="w-full py-4 bg-slate-700 text-white font-bold rounded-2xl flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                                    <i data-lucide="share-2" class="w-5 h-5"></i> Share Result
+                                </button>
+                                <button onclick="KAPIKUA.App.renderSetup()" class="w-full py-4 bg-amber-500 text-slate-900 font-black text-xl rounded-2xl shadow-lg transition-transform active:scale-95 uppercase tracking-tight">
+                                    New Game
+                                </button>
+                                <button onclick="KAPIKUA.App.renderHistory()" class="w-full py-3 text-slate-400 font-bold hover:text-slate-200">
+                                    View History
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }
+            },
+
+            App: {
+                selectedPlayers: [null, null, null, null],
+                selectedFormat: '2V2',
+                modalTeam: null,
+                modalValue: 0,
+
+                init() {
+                    KAPIKUA.State.load();
+                    this.renderSetup();
+                },
+
+                renderSetup() {
+                    document.getElementById('app').innerHTML = View.setup();
+                    lucide.createIcons();
+                },
+
+                setFormat(fmt) {
+                    this.selectedFormat = fmt;
+                    document.querySelectorAll('.format-btn').forEach(btn => {
+                        btn.classList.remove('border-amber-500', 'text-amber-500', 'bg-amber-500/5');
+                        if (btn.innerText.trim() === fmt) {
+                            btn.classList.add('border-amber-500', 'text-amber-500', 'bg-amber-500/5');
+                        }
+                    });
+                },
+
+                openPlayerPicker(slot) {
+                    this.activeSlot = slot;
+                    document.getElementById('app').innerHTML += View.playerPicker(slot);
+                    lucide.createIcons();
+                },
+
+                pickPlayer(slot, id) {
+                    const player = KAPIKUA.State.profiles.find(p => p.id === id);
+                    this.selectedPlayers[slot] = player;
+                    document.getElementById(`slot-${slot}`).innerText = player.name;
+                    document.getElementById(`slot-${slot}`).className = "text-lg font-bold text-amber-500";
+                    this.closeModal();
+                },
+
+                addNewPlayer(slot) {
+                    const name = document.getElementById('new-player-name').value.trim();
+                    if (!name) return;
+                    const newPlayer = { id: generateId(), name, wins: 0, losses: 0 };
+                    KAPIKUA.State.profiles.push(newPlayer);
+                    KAPIKUA.State.saveProfiles();
+                    this.pickPlayer(slot, newPlayer.id);
+                },
+
+                showRosterManager() {
+                    document.getElementById('app').innerHTML += View.rosterManager();
+                    lucide.createIcons();
+                },
+
+                removePlayer(id) {
+                    KAPIKUA.State.profiles = KAPIKUA.State.profiles.filter(p => p.id !== id);
+                    KAPIKUA.State.saveProfiles();
+                    this.closeModal();
+                    this.renderSetup();
+                },
+
+                closeModal() {
+                    const modals = document.querySelectorAll('.fixed');
+                    modals.forEach(m => m.remove());
+                },
+
+                startGame() {
+                    if (this.selectedPlayers.some(p => p === null)) {
+                        alert('Please select all 4 players!');
+                        return;
+                    }
+
+                    const p = this.selectedPlayers;
+                    KAPIKUA.State.currentGame = {
+                        id: generateId(),
+                        date: new Date().toISOString(),
+                        format: this.selectedFormat,
+                        players: p.map(player => player.id),
+                        teams: [
+                            { name: `${p[0].name} & ${p[1].name}`, players: [p[0].id, p[1].id] },
+                            { name: `${p[2].name} & ${p[3].name}`, players: [p[2].id, p[3].id] }
+                        ],
+                        rounds: [],
+                        status: 'active'
+                    };
+
+                    this.renderGame();
+                },
+
+                renderGame() {
+                    document.getElementById('app').innerHTML = View.game(KAPIKUA.State.currentGame);
+                    lucide.createIcons();
+                },
+
+                openScoreModal(team) {
+                    this.modalTeam = team;
+                    this.modalValue = 0;
+                    document.getElementById('app').innerHTML += View.scoreModal(team);
+                    lucide.createIcons();
+                    document.getElementById('modal-score-display').innerText = '0';
+                },
+
+                handleKey(key) {
+                    if (key === 'C') {
+                        this.modalValue = 0;
+                    } else if (key === 'Enter') {
+                        this.confirmModalScore();
+                        return;
+                    } else {
+                        this.modalValue = (this.modalValue * 10) + parseInt(key);
+                    }
+                    document.getElementById('modal-score-display').innerText = this.modalValue;
+                },
+
+                adjustModalScore(delta) {
+                    this.modalValue = Math.max(0, this.modalValue + delta);
+                    document.getElementById('modal-score-display').innerText = this.modalValue;
+                },
+
+                confirmModalScore() {
+                    const game = KAPIKUA.State.currentGame;
+                    // The current HTML layout adds the round together.
+                    // In this modular version, we just push the specific team's score
+                    // For 2v2, a round is typically "One team wins points, the other wins 0"
+                    // but we'll support dual-score for flexibility.
+
+                    const round = game.rounds[game.rounds.length - 1] || { a: 0, b: 0 };
+
+                    if (this.modalTeam === 'a') round.a = this.modalValue;
+                    else round.b = this.modalValue;
+
+                    // If it's a new round (not updating last), we might need logic to detect a "Complete" round.
+                    // Simple approach: If both have values or if "Enter" is pressed on second team.
+                    // For this version, we'll just push it if it's the first entry of a round.
+
+                    if (game.rounds.length === 0 || (this.modalTeam === 'b' && game.rounds[game.rounds.length-1].a !== 0)) {
+                         // This is a simplification: just push a new round when B confirms.
+                    }
+
+                    // Actually, let's use a simpler "Add Points" logic
+                    const totals = KAPIKUA.GameLogic.calculateTotals(game.rounds);
+
+                    // Push a new round if it's a fresh entry
+                    game.rounds.push({
+                        a: this.modalTeam === 'a' ? this.modalValue : 0,
+                        b: this.modalTeam === 'b' ? this.modalValue : 0
+                    });
+
+                    const newTotals = KAPIKUA.GameLogic.calculateTotals(game.rounds);
+                    if (KAPIKUA.GameLogic.isPalindrome(newTotals.a)) triggerCapicua();
+                    if (KAPIKUA.GameLogic.isPalindrome(newTotals.b)) triggerCapicua();
+
+                    if (KAPIKUA.GameLogic.checkWinner(newTotals, 200)) {
+                        this.endGame(newTotals.a >= 200 ? game.teams[0].name : game.teams[1].name, newTotals.a, newTotals.b);
+                    } else {
+                        this.closeModal();
+                        this.renderGame();
+                    }
+                },
+
+                undoLastRound() {
+                    KAPIKUA.State.currentGame.rounds.pop();
+                    this.renderGame();
+                },
+
+                forfeitMatch() {
+                    const team = prompt("Which team wins? (A or B)");
+                    const winner = team?.toUpperCase() === 'A' ? KAPIKUA.State.currentGame.teams[0].name : KAPIKUA.State.currentGame.teams[1].name;
+                    const totals = KAPIKUA.GameLogic.calculateTotals(KAPIKUA.State.currentGame.rounds);
+                    this.endGame(winner, totals.a, totals.b);
+                },
+
+                endGame(winner, finalA, finalB) {
+                    const game = KAPIKUA.State.currentGame;
+                    game.status = 'completed';
+                    game.winner = winner;
+                    game.scoreA = finalA;
+                    game.scoreB = finalB;
+
+                    if (game.format !== 'TRAINING MATCH') {
+                        KAPIKUA.State.history.push({
+                            id: generateId(),
+                            date: new Date().toISOString(),
+                            format: game.format,
+                            players: game.players,
+                            teams: game.teams,
+                            scoreA: finalA,
+                            scoreB: finalB,
+                            winner: winner
+                        });
+                        KAPIKUA.State.saveHistory();
+                    }
+
+                    // Update Individual W-L
+                    const winningIds = game.teams.find(t => t.name === winner).players;
+                    const losingIds = game.teams.find(t => t.name !== winner).players;
+                    KAPIKUA.State.addWinLoss(game.players, winningIds);
+
+                    document.getElementById('app').innerHTML = View.summary(game);
+                    lucide.createIcons();
+                },
+
+                groupHistoryByDate() {
+                    return KAPIKUA.State.history.reduce((acc, m) => {
+                        const d = KAPIKUA.Formatter.shortDate(m.date);
+                        if (!acc[d]) acc[d] = [];
+                        acc[d].push(m);
+                        return acc;
+                    }, {});
+                },
+
+                searchHistory(dateValue) {
+                    if (!dateValue) {
+                        this.renderHistory();
+                        return;
+                    }
+                    const filtered = KAPIKUA.State.history.filter(m => m.date.startsWith(dateValue));
+                    // This requires a custom render loop. For now, we'll just filter the grouped view.
+                    KAPIKUA.State.history = filtered;
+                    this.renderHistory();
+                },
+
+                renderHistory() {
+                    document.getElementById('app').innerHTML = View.history();
+                    lucide.createIcons();
+                },
+
+                clearHistory() {
+                    if (confirm('Delete all records?')) {
+                        KAPIKUA.State.history = [];
+                        KAPIKUA.State.saveHistory();
+                        this.renderHistory();
+                    }
+                },
+
+                exportData() {
+                    KAPIKUA.State.exportData();
+                },
+
+                importData() {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.onchange = e => {
+                        const file = e.target.files[0];
+                        const reader = new FileReader();
+                        reader.onload = event => {
+                            if (KAPIKUA.State.importData(event.target.result)) {
+                                alert('Data Imported!');
+                                this.renderSetup();
+                            }
+                        };
+                        reader.readAsText(file);
+                    };
+                    input.click();
+                },
+
+                shareResult(winner, a, b) {
+                    const text = `🏆 KAPIKUA Match Result!\\nWinner: ${winner}\\nScore: ${a} - ${b}\\n#Dominoes`;
+                    if (navigator.share) {
+                        navigator.share({ title: 'KAPIKUA Results', text: text });
+                    } else {
+                        alert("Sharing not supported on this browser: " + text);
+                    }
+                }
+            }
+        };
+
+        // Global Helper
+        function generateId() { return Math.random().toString(36).substr(2, 9); }
+        function triggerCapicua() {
+            const toast = document.getElementById('toast');
+            toast.classList.remove('opacity-0', 'translate-y-[-20px]');
+            toast.classList.add('opacity-100', 'translate-y-0');
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-[-20px]');
+                toast.classList.remove('opacity-100', 'translate-y-0');
+            }, 3000);
+        }
+
+        // Launch
+        KAPIKUA.State.load();
+        KAPIKUA.App.init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Build folders
+node_modules/
+android/app/build/
+android/build/
+www/
+dist/
+.artifacts/
+
+# IDE
+.idea/
+*.iml
+.gradle/
+local.properties
+
+# OS
+.DS_Store
+Thumbs.db
