@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>KAPIKUA</title>
+    <script src="js/tailwind.js"></script>
+    <script src="js/lucide.js"></script>
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            user-select: none;
+            overscroll-behavior: none;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            margin: 0;
+            padding: 0;
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+            padding-left: env(safe-area-inset-left);
+            padding-right: env(safe-area-inset-right);
+            background-color: #0F172A; /* Match Splash Background */
+        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        @keyframes scale-up { 0% { transform: scale(0.8); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+        .animate-scale-up { animation: scale-up 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+
+        /* Force no scroll on setup container */
+        .setup-container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            padding: 1.5rem;
+            box-sizing: border-box;
+            justify-content: space-between;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .input-group-sync {
+            display: flex;
+            align-items: flex-end;
+            gap: 0.75rem;
+        }
+        .input-group-sync input { height: 44px !important; }
+        .input-group-sync button { height: 44px !important; display: flex; align-items: center; justify-content: center; }
+
+        /* Proportional scaling for tall screens */
+        @media (min-height: 800px) {
+            .setup-container { padding: 2.5rem 1.5rem; }
+            .setup-card { padding: 1.75rem !important; margin: 1.5rem 0 !important; }
+            header h1 { font-size: 3.5rem !important; }
+        }
+
+        #loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: #0F172A;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.3s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans">
+    <div id="loading-overlay">
+        <div class="text-amber-500 text-sm font-black tracking-widest animate-pulse uppercase">KAPIKUA</div>
+    </div>
+
+<div id="app" class="h-screen w-screen overflow-hidden"></div>
+
+<script>
+    // --- STATE MANAGEMENT ---
+    let state = {
+        players: ['PLAYER 1', 'PLAYER 2', 'PLAYER 3', 'PLAYER 4'],
+        history: [],
+        currentGame: null
+    };
+
+    function saveState() { localStorage.setItem('kapikua_state_v2', JSON.stringify(state)); }
+    function loadState() {
+        const saved = localStorage.getItem('kapikua_state_v2');
+        if (saved) state = JSON.parse(saved);
+    }
+
+    function generateId() { return Math.random().toString(36).substr(2, 9); }
+    function getFormattedDate(d = new Date()) {
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
+    }
+
+    function getLifetimeStats() {
+        const stats = {};
+        state.players.forEach(p => stats[p] = { wins: 0, losses: 0 });
+        state.history.forEach(match => {
+            const winners = match.winner.split(' & ');
+            const allPlayers = match.team1.split(' & ').concat(match.team2.split(' & '));
+            allPlayers.forEach(p => {
+                if (!stats[p]) stats[p] = { wins: 0, losses: 0 };
+                if (winners.includes(p)) stats[p].wins++;
+                else stats[p].losses++;
+            });
+        });
+        return stats;
+    }
+
+    // --- VIEW COMPONENTS ---
+    const View = {
+        setup: () => {
+            const stats = getLifetimeStats();
+            return `
+                <div class="setup-container">
+                    <header class="text-center">
+                        <h1 class="text-4xl font-black text-amber-500 uppercase tracking-widest leading-none">KAPIKUA</h1>
+                        <p class="text-slate-400 text-[10px] mt-1 font-medium">${getFormattedDate()}</p>
+                    </header>
+
+                    <div class="setup-card bg-slate-800/50 p-4 rounded-3xl border border-slate-700/60 flex-1 flex flex-col justify-around my-2">
+                        <div>
+                            <h2 class="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2 mb-2">
+                                <i data-lucide="users" class="w-3 h-3 text-amber-500"></i> Active Match Lineup
+                            </h2>
+                            <div class="grid grid-cols-2 gap-3">
+                                ${[0,1,2,3].map(i => `
+                                    <div class="flex flex-col gap-1">
+                                        <label class="text-[9px] uppercase text-slate-500 font-bold">Seat ${i+1}</label>
+                                        <select id="sel-p${i}" onchange="updateSetupTeams()" class="w-full bg-slate-800 border border-slate-700 p-2.5 rounded-xl outline-none text-xs font-semibold text-white appearance-none">
+                                            ${state.players.map(p => `<option value="${p}" ${state.players[i] === p ? 'selected' : ''}>${p} (${stats[p]?.wins || 0}-${stats[p]?.losses || 0})</option>`).join('')}
+                                        </select>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                        <div class="input-group-sync pt-2">
+                            <div class="flex-1 flex flex-col gap-1">
+                                <label class="text-[9px] uppercase text-slate-500 font-bold">New Player</label>
+                                <input type="text" id="new-player-name" placeholder="Name..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm outline-none text-white">
+                            </div>
+                            <button onclick="addNewPlayer()" class="bg-slate-700 hover:bg-slate-600 px-6 rounded-xl text-xs font-bold uppercase text-white">Add</button>
+                        </div>
+                    </div>
+
+                    <div class="space-y-3">
+                        <div class="bg-slate-800/50 p-3 rounded-2xl border border-slate-700/60 flex items-center gap-3">
+                            <div class="flex-1">
+                                <h3 class="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Format</h3>
+                                <select id="match-format" class="w-full bg-slate-800 border border-slate-700 p-2 rounded-xl outline-none text-sm font-bold text-amber-400 appearance-none">
+                                    <option value="2V2">Standard 2V2 (200 pts)</option>
+                                    <option value="TRAINING MATCH">Training (No Stats)</option>
+                                </select>
+                            </div>
+                            <div class="w-px h-10 bg-slate-700"></div>
+                            <div class="flex-1 text-center">
+                                <div class="text-[9px] text-amber-500 font-black uppercase tracking-widest">Matchup</div>
+                                <div class="text-[11px] font-medium truncate" id="preview-display">...</div>
+                            </div>
+                        </div>
+
+                        <button onclick="startGame()" ontouchstart="if(navigator.vibrate)navigator.vibrate(50);" class="w-full py-5 bg-amber-500 hover:bg-amber-400 text-slate-900 font-black text-xl rounded-2xl shadow-lg transition-all active:scale-95 uppercase tracking-widest">
+                            START MATCH
+                        </button>
+
+                        <button onclick="renderHistory()" class="w-full py-1 text-slate-500 font-bold text-[10px] uppercase tracking-widest flex items-center justify-center gap-2">
+                            <i data-lucide="history" class="w-3 h-3"></i> View Ledger
+                        </button>
+                    </div>
+                </div>
+            `;
+        },
+
+        game: (game) => {
+            const totalA = game.rounds.reduce((sum, r) => sum + r.a, 0);
+            const totalB = game.rounds.reduce((sum, r) => sum + r.b, 0);
+            return `
+                <div class="h-screen flex flex-col bg-slate-900 relative overflow-hidden">
+                    <div class="p-4 flex justify-between items-center border-b border-slate-800 bg-slate-900/50">
+                        <button onclick="renderSetup()" class="p-2"><i data-lucide="chevron-left" class="w-6 h-6 text-slate-400"></i></button>
+                        <div class="text-center">
+                            <span class="text-[10px] font-black text-amber-500 uppercase tracking-widest">${game.format}</span>
+                            <div class="text-[10px] font-mono text-slate-500">${game.dateString}</div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="undoLastRound()" class="p-2 text-slate-400"><i data-lucide="undo-2" class="w-5 h-5"></i></button>
+                            <button onclick="triggerForfeit()" class="text-[10px] font-black uppercase text-red-500">End</button>
+                        </div>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto hide-scrollbar p-4 pb-32">
+                        <table class="w-full border-separate border-spacing-y-2">
+                            <thead>
+                                <tr class="text-slate-500 text-[9px] uppercase font-bold tracking-widest">
+                                    <th class="w-10">#</th>
+                                    <th class="text-slate-300 text-center">${game.teams[0].name}</th>
+                                    <th class="text-slate-300 text-center">${game.teams[1].name}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${game.rounds.length === 0 ? `<tr><td colspan="3" class="py-20 text-center text-slate-700 text-[10px] uppercase font-bold tracking-widest opacity-30">No rounds yet</td></tr>` :
+                                game.rounds.map((r, i) => `
+                                    <tr class="bg-slate-800/40 rounded-xl text-center">
+                                        <td class="py-3 text-slate-600 font-mono text-xs">${i+1}</td>
+                                        <td class="py-3 font-black text-xl text-slate-100">${r.a}</td>
+                                        <td class="py-3 font-black text-xl text-slate-100">${r.b}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="absolute bottom-0 left-0 right-0 p-4 bg-slate-800 border-t border-slate-700 flex items-center gap-4">
+                        <div class="flex-1 text-center bg-slate-900/50 py-3 rounded-2xl border border-slate-700/40">
+                            <div class="text-[8px] text-slate-500 font-black">TEAM A</div>
+                            <div class="text-2xl font-black ${totalA >= 200 ? 'text-amber-500' : 'text-white'}">${totalA}</div>
+                        </div>
+                        <button onclick="openScoreModal()" class="w-16 h-16 bg-amber-500 rounded-full flex items-center justify-center shadow-lg active:scale-90 transition-transform">
+                            <i data-lucide="plus" class="w-8 h-8 text-slate-900"></i>
+                        </button>
+                        <div class="flex-1 text-center bg-slate-900/50 py-3 rounded-2xl border border-slate-700/40">
+                            <div class="text-[8px] text-slate-500 font-black">TEAM B</div>
+                            <div class="text-2xl font-black ${totalB >= 200 ? 'text-amber-500' : 'text-white'}">${totalB}</div>
+                        </div>
+                    </div>
+
+                    <div id="score-modal" class="hidden fixed inset-0 bg-slate-950/95 z-50 flex flex-col justify-end">
+                        <div class="p-6 space-y-6">
+                            <div class="flex justify-between items-center">
+                                <h3 class="text-xs font-black text-amber-500 uppercase tracking-widest">Round Score</h3>
+                                <button onclick="closeScoreModal()" class="p-2 text-slate-500"><i data-lucide="x" class="w-6 h-6"></i></button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div onclick="setTargetTeam('a')" id="modal-box-a" class="p-6 rounded-3xl text-center border-2 border-amber-500 bg-amber-500/10 text-amber-500">
+                                    <div class="text-[8px] font-black uppercase mb-1 truncate">${game.teams[0].name}</div>
+                                    <div class="text-5xl font-black" id="modal-input-a">0</div>
+                                </div>
+                                <div onclick="setTargetTeam('b')" id="modal-box-b" class="p-6 rounded-3xl text-center border-2 border-slate-800 text-slate-500">
+                                    <div class="text-[8px] font-black uppercase mb-1 truncate">${game.teams[1].name}</div>
+                                    <div class="text-5xl font-black" id="modal-input-b">0</div>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-3 gap-3">
+                                ${[1,2,3,4,5,6,7,8,9, 'CLR', 0, 'OK'].map(k => `
+                                    <button onclick="${k === 'OK' ? 'confirmRound()' : k === 'CLR' ? 'handleModalKey(`Clear`)' : 'handleModalKey(`' + k + '`)'}" class="py-5 rounded-2xl font-black text-xl active:scale-90 ${k === 'OK' ? 'bg-amber-500 text-slate-900' : 'bg-slate-800 text-white'}">
+                                        ${k}
+                                    </button>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        },
+
+        history: (history) => `
+            <div class="h-screen flex flex-col bg-slate-900">
+                <div class="p-4 flex items-center gap-4 border-b border-slate-800">
+                    <button onclick="renderSetup()" class="p-2 text-slate-400"><i data-lucide="arrow-left" class="w-6 h-6"></i></button>
+                    <h2 class="text-lg font-black uppercase tracking-widest text-amber-500">Ledger</h2>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4 space-y-3 pb-10">
+                    ${history.length === 0 ? `<div class="py-20 text-center text-slate-700 text-xs font-bold uppercase tracking-widest opacity-30">Empty</div>` :
+                    history.slice().reverse().map(m => `
+                        <div class="bg-slate-800/40 border border-slate-700/50 p-4 rounded-3xl">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <div class="text-lg font-black text-white">${m.scoreA} - ${m.scoreB}</div>
+                                    <div class="text-[8px] font-bold text-emerald-400 uppercase">${m.winner} Wins</div>
+                                </div>
+                                <div class="text-right">
+                                    <div class="text-[8px] font-black text-amber-500 uppercase tracking-widest">${m.format}</div>
+                                    <div class="text-[8px] font-mono text-slate-500">${m.dateString}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `
+    };
+
+    // --- ACTIONS ---
+    function renderSetup() {
+        document.getElementById('app').innerHTML = View.setup();
+        updateSetupTeams();
+        if (window.lucide) lucide.createIcons();
+    }
+
+    function updateSetupTeams() {
+        try {
+            const p1 = document.getElementById('sel-p0').value;
+            const p2 = document.getElementById('sel-p1').value;
+            const p3 = document.getElementById('sel-p2').value;
+            const p4 = document.getElementById('sel-p3').value;
+            document.getElementById('preview-display').innerText = `T-A vs T-B`;
+        } catch(e){}
+    }
+
+    function addNewPlayer() {
+        const input = document.getElementById('new-player-name');
+        const name = input.value.trim().toUpperCase();
+        if (name && !state.players.includes(name)) {
+            state.players.push(name);
+            saveState();
+            renderSetup();
+        }
+        input.value = '';
+    }
+
+    function startGame() {
+        const p1 = document.getElementById('sel-p0').value;
+        const p2 = document.getElementById('sel-p1').value;
+        const p3 = document.getElementById('sel-p2').value;
+        const p4 = document.getElementById('sel-p3').value;
+        const format = document.getElementById('match-format').value;
+        state.currentGame = {
+            id: generateId(),
+            date: new Date().toISOString(),
+            dateString: getFormattedDate(),
+            format: format,
+            isTraining: format === 'TRAINING MATCH',
+            teams: [{ name: `${p1} & ${p2}` }, { name: `${p3} & ${p4}` }],
+            rounds: [],
+            status: 'active'
+        };
+        renderGame();
+    }
+
+    function renderGame() {
+        document.getElementById('app').innerHTML = View.game(state.currentGame);
+        if (window.lucide) lucide.createIcons();
+    }
+
+    function renderHistory() {
+        document.getElementById('app').innerHTML = View.history(state.history);
+        if (window.lucide) lucide.createIcons();
+    }
+
+    // --- MODAL & GAME LOGIC ---
+    let modalInput = { a: 0, b: 0, active: 'a' };
+    function openScoreModal() {
+        modalInput = { a: 0, b: 0, active: 'a' };
+        document.getElementById('score-modal').classList.remove('hidden');
+        updateModalUI();
+    }
+    function closeScoreModal() { document.getElementById('score-modal').classList.add('hidden'); }
+    function setTargetTeam(t) {
+        modalInput.active = t;
+        updateModalUI();
+    }
+    function updateModalUI() {
+        document.getElementById('modal-input-a').innerText = modalInput.a;
+        document.getElementById('modal-input-b').innerText = modalInput.b;
+        document.getElementById('modal-box-a').className = modalInput.active === 'a' ? 'p-6 rounded-3xl text-center border-2 border-amber-500 bg-amber-500/10 text-amber-500' : 'p-6 rounded-3xl text-center border-2 border-slate-800 text-slate-500';
+        document.getElementById('modal-box-b').className = modalInput.active === 'b' ? 'p-6 rounded-3xl text-center border-2 border-amber-500 bg-amber-500/10 text-amber-500' : 'p-6 rounded-3xl text-center border-2 border-slate-800 text-slate-500';
+    }
+
+    function handleModalKey(key) {
+        if (key === 'Clear') modalInput[modalInput.active] = 0;
+        else {
+            const val = parseInt(key);
+            if (!isNaN(val)) {
+                if (modalInput[modalInput.active] < 100) modalInput[modalInput.active] = (modalInput[modalInput.active] * 10) + val;
+            }
+        }
+        updateModalUI();
+    }
+
+    function confirmRound() {
+        state.currentGame.rounds.push({ a: modalInput.a, b: modalInput.b });
+        const totalA = state.currentGame.rounds.reduce((sum, r) => sum + r.a, 0);
+        const totalB = state.currentGame.rounds.reduce((sum, r) => sum + r.b, 0);
+
+        // CRITICAL: TRIGGER SPLASH
+        if (totalA === 200 || totalB === 200) {
+            triggerDosMasSplash();
+        }
+
+        if (totalA >= 200 || totalB >= 200) {
+            setTimeout(() => {
+                closeScoreModal();
+                endGame(totalA >= 200 ? state.currentGame.teams[0].name : state.currentGame.teams[1].name, totalA, totalB);
+            }, 500);
+        } else {
+            closeScoreModal();
+            renderGame();
+        }
+    }
+
+    function triggerDosMasSplash() {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-[999] flex flex-col items-center justify-center bg-slate-900/95 backdrop-blur-2xl animate-scale-up';
+        overlay.innerHTML = `
+            <div class="text-center">
+                <div class="text-9xl mb-8">🏆</div>
+                <h1 class="text-8xl font-black text-amber-500 uppercase tracking-tighter mb-4">DOS MAS!</h1>
+                <p class="text-slate-300 font-black text-2xl uppercase tracking-[0.4em]">KAPIKUA VICTORY</p>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 500]);
+        setTimeout(() => overlay.remove(), 4000);
+    }
+
+    function undoLastRound() {
+        if(state.currentGame && state.currentGame.rounds.length > 0) { state.currentGame.rounds.pop(); renderGame(); }
+    }
+    function triggerForfeit() { if (confirm("End match now?")) { const totalA = state.currentGame.rounds.reduce((sum, r) => sum + r.a, 0); const totalB = state.currentGame.rounds.reduce((sum, r) => sum + r.b, 0); endGame(totalA >= totalB ? state.currentGame.teams[0].name : totalA >= totalB ? state.currentGame.teams[0].name : state.currentGame.teams[1].name, totalA, totalB); } }
+
+    function endGame(winner, finalA, finalB) {
+        state.currentGame.status = 'completed';
+        state.currentGame.winner = winner;
+        if (!state.currentGame.isTraining && (finalA > 0 || finalB > 0)) {
+            state.history.push({ ...state.currentGame, winner, scoreA: finalA, scoreB: finalB });
+            saveState();
+        }
+        renderSetup();
+    }
+
+    // --- INITIALIZE ---
+    loadState();
+    renderSetup();
+
+    // Hide loading overlay once JS is ready
+    window.addEventListener('load', () => {
+        setTimeout(() => {
+            const overlay = document.getElementById('loading-overlay');
+            if (overlay) {
+                overlay.style.opacity = '0';
+                setTimeout(() => overlay.style.display = 'none', 300);
+            }
+        }, 300);
+    });
+</script>
+</body>
+</html>
