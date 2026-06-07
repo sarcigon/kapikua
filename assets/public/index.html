@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>KAPIKUA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+            user-select: none;
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans h-screen overflow-hidden flex flex-col">
+
+<!-- APP CONTAINER -->
+<div id="app" class="h-full flex flex-col"></div>
+
+<!-- TOAST NOTIFICATION -->
+<div id="toast" class="fixed top-10 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-full bg-amber-500 text-slate-900 font-bold shadow-lg opacity-0 pointer-events-none transition-all duration-300 transform translate-y-[-20px]">
+    ✨ DOS MAS! ✨
+</div>
+
+<script>
+    // --- STATE MANAGEMENT ---
+    const STORE_KEYS = {
+        PLAYERS: 'kapikua_players',
+        HISTORY: 'kapikua_history'
+    };
+
+    let state = {
+        players: JSON.parse(localStorage.getItem(STORE_KEYS.PLAYERS) || '["Player 1", "Player 2", "Player 3", "Player 4"]'),
+        history: JSON.parse(localStorage.getItem(STORE_KEYS.HISTORY) || '[]'),
+        currentGame: null,
+        searchQuery: ''
+    };
+
+    function saveState() {
+        localStorage.setItem(STORE_KEYS.PLAYERS, JSON.stringify(state.players));
+        localStorage.setItem(STORE_KEYS.HISTORY, JSON.stringify(state.history));
+    }
+
+    // --- UTILS ---
+    const isPalindrome = (num) => {
+        if (num < 10) return false;
+        const s = num.toString();
+        return s === s.split('').reverse().join('');
+    };
+
+    const generateId = () => Math.random().toString(36).substr(2, 9);
+
+    const getFormattedDate = (dateObj = new Date()) => {
+        return dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: '2-digit', year: 'numeric' }).replace(/,/g, '');
+    };
+
+    // --- STATS ENGINE ---
+    function getLifetimeStats() {
+        let stats = {};
+        state.players.forEach(p => stats[p] = { wins: 0, losses: 0 });
+
+        state.history.forEach(match => {
+            if (match.isTraining) return;
+
+            const t1_players = match.team1.split(' & ');
+            const t2_players = match.team2.split(' & ');
+            const allMatchPlayers = [...t1_players, ...t2_players];
+
+            allMatchPlayers.forEach(p => {
+                if (!stats[p]) stats[p] = { wins: 0, losses: 0 };
+            });
+
+            const winningPlayers = match.winner === match.team1 ? t1_players : t2_players;
+            const losingPlayers = match.winner === match.team1 ? t2_players : t1_players;
+
+            winningPlayers.forEach(p => stats[p].wins++);
+            losingPlayers.forEach(p => stats[p].losses++);
+        });
+        return stats;
+    }
+
+    // --- UI VIEWS ---
+    const View = {
+        setup: () => {
+            const stats = getLifetimeStats();
+            return `
+                <div class="flex-1 p-6 flex flex-col gap-5 overflow-y-auto hide-scrollbar">
+                    <header class="text-center mb-2">
+                        <h1 class="text-4xl font-black text-amber-500 uppercase tracking-widest">KAPIKUA</h1>
+                        <p class="text-slate-400 text-xs mt-1 font-medium">${getFormattedDate()}</p>
+                    </header>
+
+                    <!-- Player Selection Pool -->
+                    <div class="space-y-3 bg-slate-800/50 p-4 rounded-2xl border border-slate-700/60">
+                        <h2 class="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                            <i data-lucide="users" class="w-4 h-4 text-amber-500"></i> Active Match Lineup
+                        </h2>
+                        <div class="grid grid-cols-2 gap-3">
+                            ${[0,1,2,3].map(i => `
+                                <div class="flex flex-col gap-1">
+                                    <label class="text-[10px] uppercase text-slate-500 font-bold">Seat ${i+1}</label>
+                                    <select id="sel-p${i}" onchange="updateSetupTeams()" class="bg-slate-800 border border-slate-700 p-2.5 rounded-xl outline-none text-sm font-semibold text-white appearance-none">
+                                        ${state.players.map(p => `<option value="${p}" ${state.players[i] === p ? 'selected' : ''}>${p} (${stats[p]?.wins || 0}-${stats[p]?.losses || 0})</option>`).join('')}
+                                    </select>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="pt-2 flex gap-2">
+                            <input type="text" id="new-player-name" placeholder="Add custom player name..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 text-sm outline-none">
+                            <button onclick="addNewPlayer()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase">Add</button>
+                        </div>
+                    </div>
+
+                    <!-- Match Type Selector -->
+                    <div class="bg-slate-800/50 p-4 rounded-2xl border border-slate-700/60 space-y-2">
+                        <h3 class="text-sm font-bold text-slate-400 uppercase tracking-wider">Match Format</h3>
+                        <select id="match-format" class="w-full bg-slate-800 border border-slate-700 p-3 rounded-xl outline-none text-sm font-bold text-amber-400 appearance-none">
+                            <option value="2V2">Standard 2V2 Match (First to 200 pts)</option>
+                            <option value="BEST OF 3">Best of 3 Games</option>
+                            <option value="BEST OF 5">Best of 5 Games</option>
+                            <option value="RIVALRY MATCH">Rivalry Match</option>
+                            <option value="TRAINING MATCH">Training Match (No Stats Kept)</option>
+                        </select>
+                    </div>
+
+                    <!-- Current Dynamic Teams Preview -->
+                    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+                        <div class="grid grid-cols-2 gap-4 text-center divide-x divide-slate-700">
+                            <div>
+                                <div class="text-[10px] text-amber-500 font-black uppercase tracking-widest mb-1">Team A</div>
+                                <div class="text-sm font-medium" id="preview-team-a">Loading...</div>
+                            </div>
+                            <div>
+                                <div class="text-[10px] text-amber-500 font-black uppercase tracking-widest mb-1">Team B</div>
+                                <div class="text-sm font-medium" id="preview-team-b">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="startGame()" ontouchstart="if(navigator.vibrate)navigator.vibrate(50);" class="w-full py-4 bg-amber-500 hover:bg-amber-400 text-slate-900 font-black text-xl rounded-2xl shadow-lg transition-transform active:scale-95 mt-2 uppercase tracking-wider">
+                        NEW MATCH
+                    </button>
+
+                    <button onclick="renderHistory()" class="w-full py-2 text-slate-400 font-bold text-sm hover:text-slate-200 transition-colors flex items-center justify-center gap-2">
+                        <i data-lucide="history" class="w-4 h-4"></i> View Historical Ledger
+                    </button>
+                </div>
+            `;
+        },
+
+        game: (game) => {
+            const totalA = game.rounds.reduce((sum, r) => sum + r.a, 0);
+            const totalB = game.rounds.reduce((sum, r) => sum + r.b, 0);
+
+            return `
+                <div class="h-full flex flex-col bg-slate-900 relative">
+                    <!-- Top Navigation & Actions -->
+                    <div class="p-4 flex justify-between items-center border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
+                        <button onclick="renderSetup()" class="p-2 hover:bg-slate-800 rounded-lg transition-colors">
+                            <i data-lucide="chevron-left" class="w-6 h-6 text-slate-400"></i>
+                        </button>
+                        <div class="text-center">
+                            <span class="text-[10px] font-black text-amber-500 uppercase tracking-widest">${game.format}</span>
+                            <div class="text-sm font-mono text-slate-400">${getFormattedDate(new Date(game.date))}</div>
+                        </div>
+                        <div class="flex gap-1">
+                            <button onclick="undoLastRound()" class="p-2 hover:bg-slate-800 rounded-lg text-slate-400" title="Undo Round">
+                                <i data-lucide="undo-2" class="w-5 h-5"></i>
+                            </button>
+                            <button onclick="triggerForfeit()" class="p-2 hover:bg-red-900/40 text-red-400 rounded-lg text-xs font-black uppercase border border-red-500/20" title="Forfeit Match">
+                                End
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Infinite Scoreboard Frame -->
+                    <div class="flex-1 overflow-y-auto hide-scrollbar p-4 pb-24">
+                        <table class="w-full text-left border-separate border-spacing-y-2">
+                            <thead>
+                                <tr class="text-slate-500 text-[11px] uppercase font-bold tracking-wider">
+                                    <th class="px-2 py-2 w-12 text-center">Round</th>
+                                    <th class="px-4 py-2 text-center text-slate-300">${game.teams[0].name}</th>
+                                    <th class="px-4 py-2 text-center text-slate-300">${game.teams[1].name}</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${game.rounds.length === 0 ? `
+                                    <tr><td colspan="3" class="py-20 text-center text-slate-600 font-bold uppercase tracking-widest text-[10px] opacity-40 italic">Start by adding a round</td></tr>
+                                ` : game.rounds.map((r, i) => `
+                                    <tr class="bg-slate-800/60 rounded-xl overflow-hidden border border-slate-700/50 text-center">
+                                        <td class="px-2 py-3.5 text-slate-500 font-mono text-xs font-bold">${i+1}</td>
+                                        <td class="px-4 py-3.5 font-black text-lg text-slate-100">${r.a}</td>
+                                        <td class="px-4 py-3.5 font-black text-lg text-slate-100">${r.b}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Running Matrix Footer Bar -->
+                    <div class="absolute bottom-0 left-0 right-0 p-4 bg-slate-800 border-t border-slate-700 shadow-2xl flex items-center justify-between gap-4">
+                        <div class="flex-1 text-center bg-slate-900/60 py-2.5 rounded-xl border border-slate-700/40 shadow-inner">
+                            <div class="text-[9px] uppercase text-slate-500 font-black">TEAM A</div>
+                            <div class="text-xl font-black text-white">${totalA}</div>
+                        </div>
+                        <button onclick="openScoreModal()" class="px-6 py-4 bg-amber-500 hover:bg-amber-400 text-slate-900 font-black rounded-xl shadow-lg transform active:scale-95 transition-all text-xs uppercase tracking-widest flex flex-col items-center gap-0.5">
+                            <i data-lucide="plus-circle" class="w-4 h-4"></i> ADD ROUND
+                        </button>
+                        <div class="flex-1 text-center bg-slate-900/60 py-2.5 rounded-xl border border-slate-700/40 shadow-inner">
+                            <div class="text-[9px] uppercase text-slate-500 font-black">TEAM B</div>
+                            <div class="text-xl font-black text-white">${totalB}</div>
+                        </div>
+                    </div>
+
+                    <!-- POPUP SCORE ENTRY MODAL -->
+                    <div id="score-modal" class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-50 flex flex-col justify-end">
+                        <div class="bg-slate-800 border-t-2 border-amber-500/20 rounded-t-[2.5rem] p-6 space-y-6 shadow-2xl overflow-y-auto max-h-[85vh]">
+                            <div class="flex justify-between items-center border-b border-slate-700/50 pb-3">
+                                <h3 class="text-xs font-black text-amber-500 uppercase tracking-widest">Enter Points</h3>
+                                <button onclick="closeScoreModal()" class="p-2 bg-slate-700 rounded-xl text-slate-400 active:bg-red-500/10 active:text-red-400"><i data-lucide="x" class="w-5 h-5"></i></button>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-4">
+                                <div onclick="setTargetTeam('a')" id="modal-box-a" class="p-5 rounded-2xl text-center border-2 border-amber-500 bg-slate-700/40 text-amber-400 scale-105 transition-all shadow-lg">
+                                    <div class="text-[9px] font-black text-slate-400 uppercase mb-1 truncate">${game.teams[0].name}</div>
+                                    <div class="text-4xl font-black" id="modal-input-a">0</div>
+                                </div>
+                                <div onclick="setTargetTeam('b')" id="modal-box-b" class="p-5 rounded-2xl text-center border-2 border-slate-700 text-slate-500 transition-all">
+                                    <div class="text-[9px] font-black text-slate-400 uppercase mb-1 truncate">${game.teams[1].name}</div>
+                                    <div class="text-4xl font-black" id="modal-input-b">0</div>
+                                </div>
+                            </div>
+
+                            <!-- Dynamic Input Keypad Matrix -->
+                            <div class="grid grid-cols-3 gap-3 max-w-xs mx-auto pt-2">
+                                ${[1,2,3,4,5,6,7,8,9, 'Clear', 0, 'Cancel'].map(k => `
+                                    <button onclick="handleModalKey('${k}')" class="py-5 rounded-xl font-black text-lg transition-all active:scale-90 ${k === 'Cancel' ? 'bg-red-900/30 text-red-400 border border-red-500/20' : k === 'Clear' ? 'bg-slate-600/50 text-slate-300' : 'bg-slate-700 text-slate-100 shadow-md'}">
+                                        ${String(k).toUpperCase()}
+                                    </button>
+                                `).join('')}
+                            </div>
+
+                            <button onclick="confirmRound()" class="w-full py-5 bg-amber-500 hover:bg-amber-400 text-slate-900 font-black text-lg rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest">
+                                SAVE ROUND
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        },
+
+        history: () => {
+            const stats = getLifetimeStats();
+            const filteredHistory = state.history.filter(game => {
+                if(!state.searchQuery) return true;
+                return game.dateString.toLowerCase().includes(state.searchQuery.toLowerCase());
+            });
+
+            return `
+                <div class="flex-1 p-6 flex flex-col gap-5 overflow-y-auto hide-scrollbar">
+                    <header class="flex items-center gap-4 border-b border-slate-800 pb-3">
+                        <button onclick="renderSetup()" class="p-2 bg-slate-800 rounded-lg text-slate-400"><i data-lucide="chevron-left" class="w-5 h-5"></i></button>
+                        <h1 class="text-xl font-black text-amber-500 uppercase tracking-wider">Records</h1>
+                    </header>
+
+                    <!-- Live Search -->
+                    <div class="relative">
+                        <input type="text" id="hist-search" value="${state.searchQuery}" oninput="executeHistorySearch()" placeholder="Search by date..." class="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-sm outline-none text-white pl-10">
+                        <i data-lucide="search" class="w-4 h-4 text-slate-500 absolute left-3.5 top-4"></i>
+                    </div>
+
+                    <!-- Stats -->
+                    <div class="bg-slate-800/40 p-4 rounded-2xl border border-slate-700/60 space-y-3 shadow-inner">
+                        <h2 class="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                            <i data-lucide="award" class="w-4 h-4 text-amber-500"></i> Lifetime Individual Stats
+                        </h2>
+                        <div class="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                            ${Object.keys(stats).length === 0 ? `<div class="col-span-2 text-center py-4 text-slate-600">No players found</div>` : Object.keys(stats).map(player => `
+                                <div class="bg-slate-900/60 p-2 rounded-xl flex justify-between border border-slate-800 shadow-sm">
+                                    <span class="text-slate-300 truncate max-w-[90px] font-sans font-bold">${player}</span>
+                                    <span class="text-amber-400 font-bold">${stats[player].wins}-${stats[player].losses}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <!-- Logs -->
+                    <div class="space-y-3 flex-1">
+                        ${filteredHistory.length === 0 ? `
+                            <div class="text-center py-12 text-slate-600">
+                                <i data-lucide="database" class="w-10 h-10 mx-auto mb-2 opacity-20"></i>
+                                <p class="text-xs font-bold uppercase tracking-widest">No records found</p>
+                            </div>
+                        ` : filteredHistory.map((game, index) => `
+                            <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col gap-2 relative shadow-md">
+                                <div class="flex justify-between items-center text-[9px] text-slate-500 font-black uppercase">
+                                    <span>${game.dateString}</span>
+                                    <span class="px-2 py-0.5 rounded bg-slate-700 text-amber-400">${game.format || '2V2'}</span>
+                                </div>
+                                <div class="flex justify-between items-center mt-1">
+                                    <div class="text-left flex-1 min-w-0">
+                                        <div class="text-xs font-black text-slate-200 truncate ${game.winner === game.team1 ? 'text-amber-400 ring-1 ring-amber-500/20 rounded px-1 -ml-1' : ''}">${game.team1}</div>
+                                        <div class="text-xs font-black text-slate-200 truncate ${game.winner === game.team2 ? 'text-amber-400 ring-1 ring-amber-500/20 rounded px-1 -ml-1' : ''}">${game.team2}</div>
+                                    </div>
+                                    <div class="text-right ml-4">
+                                        <div class="text-base font-black text-amber-500">${game.scoreA}-${game.scoreB}</div>
+                                    </div>
+                                </div>
+                                <button onclick="shareSingleMatch(${index})" class="absolute top-3 right-3 text-slate-600 hover:text-amber-400 active:scale-90 transition-transform">
+                                    <i data-lucide="share-2" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                        `).reverse().join('')}
+                    </div>
+
+                    <button onclick="clearHistory()" class="w-full py-3 text-red-400/70 font-black text-[10px] uppercase tracking-[0.2em] hover:text-red-400 active:bg-red-500/5 rounded-xl transition-all mt-2">
+                        Purge Records
+                    </button>
+                </div>
+            `;
+        },
+
+        summary: (game) => {
+            const totalA = game.rounds.reduce((sum, r) => sum + r.a, 0);
+            const totalB = game.rounds.reduce((sum, r) => sum + r.b, 0);
+
+            return `
+                <div class="h-full flex flex-col p-8 text-center justify-center gap-8 bg-slate-900">
+                    <div class="space-y-2">
+                        <i data-lucide="trophy" class="w-20 h-20 mx-auto text-amber-500 drop-shadow-2xl animate-bounce"></i>
+                        <h1 class="text-4xl font-black text-white uppercase tracking-tighter">Match Ended</h1>
+                        <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest">${game.isTraining ? 'Training Run' : 'Official Record'}</p>
+                    </div>
+
+                    <div class="bg-slate-800 p-8 rounded-[3rem] border-2 border-amber-500/40 shadow-2xl space-y-6 relative overflow-hidden">
+                        <div class="absolute inset-0 bg-amber-500/5 pointer-events-none"></div>
+                        <div class="relative">
+                            <div class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Victor</div>
+                            <div class="text-2xl font-black text-amber-400 uppercase tracking-tight">${game.winner}</div>
+                        </div>
+                        <div class="flex justify-between items-center gap-4 border-t border-slate-700/50 pt-6 relative">
+                            <div class="text-center flex-1">
+                                <div class="text-[9px] font-black text-slate-500 uppercase mb-1 truncate">${game.teams[0].name}</div>
+                                <div class="text-2xl font-black text-white">${totalA}</div>
+                            </div>
+                            <div class="text-lg font-black text-slate-700 px-2">VS</div>
+                            <div class="text-center flex-1">
+                                <div class="text-[9px] font-black text-slate-500 uppercase mb-1 truncate">${game.teams[1].name}</div>
+                                <div class="text-2xl font-black text-white">${totalB}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col gap-3 pt-4">
+                        <button onclick="renderSetup()" class="w-full py-5 bg-amber-500 text-slate-900 font-black text-xl rounded-[2rem] shadow-xl active:scale-95 transition-all uppercase tracking-widest">
+                            New Match
+                        </button>
+                        <button onclick="renderHistory()" class="w-full py-3 text-slate-500 font-black text-xs hover:text-slate-300 uppercase tracking-widest">
+                            Browse History
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+    };
+
+    // --- CONTROL ENGINE ---
+    let modalInput = { a: 0, b: 0, active: 'a' };
+
+    function renderSetup() {
+        document.getElementById('app').innerHTML = View.setup();
+        if (window.lucide) lucide.createIcons();
+        updateSetupTeams();
+    }
+
+    function updateSetupTeams() {
+        const p1 = document.getElementById('sel-p0')?.value || "";
+        const p2 = document.getElementById('sel-p1')?.value || "";
+        const p3 = document.getElementById('sel-p2')?.value || "";
+        const p4 = document.getElementById('sel-p3')?.value || "";
+
+        const preA = document.getElementById('preview-team-a');
+        const preB = document.getElementById('preview-team-b');
+        if (preA) preA.innerText = `${p1} & ${p2}`;
+        if (preB) preB.innerText = `${p3} & ${p4}`;
+    }
+
+    function addNewPlayer() {
+        const nameInput = document.getElementById('new-player-name');
+        const name = nameInput.value.trim();
+        if (name && !state.players.includes(name)) {
+            state.players.push(name);
+            saveState();
+            renderSetup();
+        }
+        nameInput.value = '';
+    }
+
+    function startGame() {
+        try {
+            const p1 = document.getElementById('sel-p0').value;
+            const p2 = document.getElementById('sel-p1').value;
+            const p3 = document.getElementById('sel-p2').value;
+            const p4 = document.getElementById('sel-p3').value;
+            const format = document.getElementById('match-format').value;
+
+            state.currentGame = {
+                id: generateId(),
+                date: new Date().toISOString(),
+                dateString: getFormattedDate(),
+                format: format,
+                isTraining: format === 'TRAINING MATCH',
+                teams: [
+                    { name: `${p1} & ${p2}` },
+                    { name: `${p3} & ${p4}` }
+                ],
+                rounds: [],
+                status: 'active'
+            };
+
+            renderGame();
+        } catch (e) {
+            console.error("startGame failed", e);
+        }
+    }
+
+    function renderGame() {
+        document.getElementById('app').innerHTML = View.game(state.currentGame);
+        if (window.lucide) lucide.createIcons();
+    }
+
+    // --- MODAL LOGIC ---
+    function openScoreModal() {
+        modalInput = { a: 0, b: 0, active: 'a' };
+        const m = document.getElementById('score-modal');
+        if (m) {
+            m.classList.remove('hidden');
+            updateModalUI();
+        }
+    }
+
+    function closeScoreModal() {
+        const m = document.getElementById('score-modal');
+        if (m) m.classList.add('hidden');
+    }
+
+    function setTargetTeam(team) {
+        modalInput.active = team;
+        updateModalUI();
+    }
+
+    function updateModalUI() {
+        const inA = document.getElementById('modal-input-a');
+        const inB = document.getElementById('modal-input-b');
+        const boxA = document.getElementById('modal-box-a');
+        const boxB = document.getElementById('modal-box-b');
+
+        if (!inA || !inB || !boxA || !boxB) return;
+
+        inA.innerText = modalInput.a;
+        inB.innerText = modalInput.b;
+
+        if (modalInput.active === 'a') {
+            boxA.className = "p-5 rounded-2xl text-center border-2 border-amber-500 bg-slate-700/40 text-amber-400 scale-105 transition-all shadow-lg";
+            boxB.className = "p-5 rounded-2xl text-center border-2 border-slate-700 text-slate-500 transition-all";
+        } else {
+            boxB.className = "p-5 rounded-2xl text-center border-2 border-amber-500 bg-slate-700/40 text-amber-400 scale-105 transition-all shadow-lg";
+            boxA.className = "p-5 rounded-2xl text-center border-2 border-slate-700 text-slate-500 transition-all";
+        }
+    }
+
+    function handleModalKey(key) {
+        if (key === 'Clear') {
+            modalInput[modalInput.active] = 0;
+        } else if (key === 'Cancel') {
+            closeScoreModal();
+            return;
+        } else {
+            const val = parseInt(key);
+            if (!isNaN(val)) {
+                if (modalInput[modalInput.active] < 100) {
+                    modalInput[modalInput.active] = (modalInput[modalInput.active] * 10) + val;
+                }
+            }
+        }
+        updateModalUI();
+    }
+
+    function confirmRound() {
+        state.currentGame.rounds.push({ a: modalInput.a, b: modalInput.b });
+
+        const totalA = state.currentGame.rounds.reduce((sum, r) => sum + r.a, 0);
+        const totalB = state.currentGame.rounds.reduce((sum, r) => sum + r.b, 0);
+
+        // ONLY trigger "DOS MAS" if exactly 200 is reached by either team
+        if (totalA === 200 || totalB === 200) {
+            triggerDosMasToast();
+        }
+
+        // Logic for winning (200 pts or more)
+        if (totalA >= 200 || totalB >= 200) {
+            closeScoreModal();
+            endGame(totalA >= 200 ? state.currentGame.teams[0].name : state.currentGame.teams[1].name, totalA, totalB);
+            return;
+        }
+
+        closeScoreModal();
+        renderGame();
+    }
+
+    function undoLastRound() {
+        if(state.currentGame && state.currentGame.rounds.length > 0) {
+            state.currentGame.rounds.pop();
+            renderGame();
+        }
+    }
+
+    function triggerForfeit() {
+        if (confirm("End match now?")) {
+            const totalA = state.currentGame.rounds.reduce((sum, r) => sum + r.a, 0);
+            const totalB = state.currentGame.rounds.reduce((sum, r) => sum + r.b, 0);
+            const winner = totalA >= totalB ? state.currentGame.teams[0].name : state.currentGame.teams[1].name;
+            endGame(winner, totalA, totalB);
+        }
+    }
+
+    function triggerDosMasToast() {
+        const toast = document.getElementById('toast');
+        if (!toast) return;
+        toast.classList.remove('opacity-0', 'translate-y-[-20px]');
+        toast.classList.add('opacity-100', 'translate-y-0');
+        setTimeout(() => {
+            toast.classList.add('opacity-0', 'translate-y-[-20px]');
+            toast.classList.remove('opacity-100', 'translate-y-0');
+        }, 3000);
+    }
+
+    function endGame(winner, finalA, finalB) {
+        state.currentGame.status = 'completed';
+        state.currentGame.winner = winner;
+
+        // ONLY save match if scores are greater than 0-0
+        if (!state.currentGame.isTraining && (finalA > 0 || finalB > 0)) {
+            state.history.push({
+                date: state.currentGame.date,
+                dateString: state.currentGame.dateString,
+                format: state.currentGame.format,
+                team1: state.currentGame.teams[0].name,
+                team2: state.currentGame.teams[1].name,
+                winner: winner,
+                scoreA: finalA,
+                scoreB: finalB,
+                isTraining: false
+            });
+            saveState();
+        }
+
+        document.getElementById('app').innerHTML = View.summary(state.currentGame);
+        if (window.lucide) lucide.createIcons();
+    }
+
+    function renderHistory() {
+        document.getElementById('app').innerHTML = View.history();
+        if (window.lucide) lucide.createIcons();
+    }
+
+    function executeHistorySearch() {
+        state.searchQuery = document.getElementById('hist-search').value;
+        renderHistory();
+        document.getElementById('hist-search').focus();
+    }
+
+    function shareSingleMatch(index) {
+        const match = state.history[index];
+        const shareText = `📯 KAPIKUA Match Record!\n🏆 Winner: ${match.winner}\n📊 Score: ${match.team1} (${match.scoreA}) vs ${match.team2} (${match.scoreB})`;
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(shareText).then(() => alert("Copied to clipboard!"));
+        } else {
+            alert(shareText);
+        }
+    }
+
+    function clearHistory() {
+        if (confirm('Delete all history?')) {
+            state.history = [];
+            saveState();
+            renderHistory();
+        }
+    }
+
+    // --- INIT ---
+    document.addEventListener('DOMContentLoaded', renderSetup);
+    if (document.readyState === "complete" || document.readyState === "interactive") renderSetup();
+</script>
+</body>
+</html>
